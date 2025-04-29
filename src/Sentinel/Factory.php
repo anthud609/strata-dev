@@ -15,20 +15,16 @@ namespace Sentinel;
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
 use Monolog\Formatter\LineFormatter;
+use Sentinel\Handler\WormHandler;
+use Sentinel\Handler\WebhookHandler;
 
-/**
- * Class Factory
- *
- * Builds and configures Monolog channels, handlers, and formatters based
- * on the provided configuration array.
- */
 class Factory
 {
     /**
      * Create and return a configured Logger instance.
      *
      * @param array $config The Sentinel configuration array.
-     *                      Must include 'channels' => ['default' => [...]].
+     *                      Must include 'channels' => ['default' => [...]].  
      * @return Logger       The configured Monolog Logger.
      */
     public static function create(array $config): Logger
@@ -37,37 +33,70 @@ class Factory
         $channelConfig = $config['channels']['default'] ?? [];
 
         // Instantiate the Logger with a default channel name
-        $logger = new Logger('default');
+        $name   = $channelConfig['name'] ?? 'default';
+        $logger = new Logger($name);
 
-        // Iterate through each handler defined in the channel config
+        //
+        // 1) Configure handlers
+        //
         foreach ($channelConfig['handlers'] ?? [] as $handlerConfig) {
-            if ($handlerConfig['type'] === 'stream') {
-                // Create a StreamHandler to write logs to a file or stream
-                $streamHandler = new StreamHandler(
-                    $handlerConfig['path'],                          // log file path
-                    Logger::toMonologLevel($handlerConfig['level'])   // log level
-                );
+            switch ($handlerConfig['type'] ?? '') {
+                case 'stream':
+                    $handler = new StreamHandler(
+                        $handlerConfig['path'],
+                        Logger::toMonologLevel($handlerConfig['level'] ?? 'DEBUG')
+                    );
+                    $formatter = new LineFormatter(
+                        $handlerConfig['format'] ?? null,
+                        null,
+                        true,
+                        true
+                    );
+                    $handler->setFormatter($formatter);
+                    break;
 
-                // Attach a LineFormatter to control log message format
-                $formatter = new LineFormatter(
-                    $handlerConfig['format'],    // format template
-                    null,                        // date format (default)
-                    true,                        // allow inline line breaks
-                    true                         // ignore empty context and extra
-                );
-                $streamHandler->setFormatter($formatter);
+                case 'worm':
+                    // Immutable, write-once log storage handler
+                    $handler = new WormHandler(
+                        $config['worm']['storage_path']   ?? '',
+                        $config['worm']['checksum_table'] ?? '',
+                        $config['worm']['algorithm']      ?? 'sha256'
+                    );
+                    break;
 
-                // Push the configured handler onto the Logger stack
-                $logger->pushHandler($streamHandler);
+                case 'webhook':
+                    // Generic HTTP-notify handler
+                    $routeKey = $handlerConfig['route'] ?? null;
+                    $webhook  = $config['webhooks'][$routeKey] ?? [];
+                    $handler  = new WebhookHandler(
+                        $webhook['url']     ?? '',
+                        $handlerConfig['method'] ?? 'POST'
+                    );
+                    break;
+
+                // TODO: add cases for 'email', 'syslog', 'mongodb', etc.
+
+                default:
+                    // Unknown handler type; skip
+                    continue 2;
             }
 
-            // TODO: handle other handler types (webhook, WORM, email, etc.)
+            $logger->pushHandler($handler);
         }
 
-        // TODO: attach any processors defined in channelConfig['processors']
-        // e.g. TraceContextProcessor, RedactionProcessor, ChecksumProcessor
+        //
+        // 2) Attach processors
+        //
+        foreach ($channelConfig['processors'] ?? [] as $procConfig) {
+            $class = $procConfig['class'] ?? null;
+            if (! $class || ! class_exists($class)) {
+                continue;
+            }
+            // Pass the full config so processors can pick their own settings
+            $processor = new $class($config);
+            $logger->pushProcessor($processor);
+        }
 
-        // Return the fully configured Logger
         return $logger;
     }
 }

@@ -37,7 +37,7 @@ require __DIR__ . '/../bootstrap/sentinel.php';
 //------------------------------------------------------------------------------
 // Emits an INFO-level message into your configured log targets.
 // This confirms that Sentinel is up and capturing logs.
-Sentinel\Facade::info('🚀 Sentinel is up!', ['foo' => 'bar']);
+Sentinel\Facade::info('🚀 Sentinel is up!');
 
 //------------------------------------------------------------------------------
 // 5) Dispatch request / output response
