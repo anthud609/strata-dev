@@ -1,5 +1,14 @@
 <?php
-
-set_error_handler([Factory::class, 'handlePhpError']);
-set_exception_handler([Factory::class, 'handleException']);
-register_shutdown_function([Factory::class, 'handleShutdown']);
+class Event {
+    public function __construct(
+      public string $level,
+      public string $message,
+      public array  $context,
+      public \DateTimeImmutable $timestamp,
+      public ?string $errorId = null,
+      public ?string $file = null,
+      public ?int    $line = null,
+      // …etc…
+    ) {}
+  }
+  

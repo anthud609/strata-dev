@@ -31,3 +31,7 @@ $sentinel = Factory::create($config);
 // Facade::setInstance makes this logger available via Sentinel\Facade::{level}()
 // so the rest of your code can log without passing around the logger object.
 Facade::setInstance($sentinel);
+
+set_error_handler([Sentinel\Factory::class, 'handlePhpError']);
+set_exception_handler([Sentinel\Factory::class, 'handleException']);
+register_shutdown_function([Sentinel\Factory::class, 'handleShutdown']);

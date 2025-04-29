@@ -3,8 +3,8 @@
  * src/Sentinel/Factory.php
  *
  * Factory class responsible for constructing and configuring the PSR-3 Logger
- * instance using Monolog. It reads channel definitions from the configuration,
- * sets up handlers with formatters, and attaches any custom processors.
+ * instance using Monolog. It also provides PHP error/exception handlers that
+ * funnel into the same logger.
  *
  * @package Sentinel
  * @see \Monolog\Logger
@@ -17,6 +17,7 @@ use Monolog\Handler\StreamHandler;
 use Monolog\Formatter\LineFormatter;
 use Sentinel\Handler\WormHandler;
 use Sentinel\Handler\WebhookHandler;
+use Throwable;
 
 class Factory
 {
@@ -24,26 +25,25 @@ class Factory
      * Create and return a configured Logger instance.
      *
      * @param array $config The Sentinel configuration array.
-     *                      Must include 'channels' => ['default' => [...]].  
+     *                      Must include 'channels' => ['default' => [...]]
      * @return Logger       The configured Monolog Logger.
      */
     public static function create(array $config): Logger
     {
-        // Retrieve the default channel's configuration or fallback to empty array
+        // 1) Grab default channel config (or empty array)
         $channelConfig = $config['channels']['default'] ?? [];
 
-        // Instantiate the Logger with a default channel name
+        // 2) Instantiate the Logger with configured name or default
         $name   = $channelConfig['name'] ?? 'default';
         $logger = new Logger($name);
 
-        //
-        // 1) Configure handlers
-        //
+        // 3) Configure each handler
         foreach ($channelConfig['handlers'] ?? [] as $handlerConfig) {
-            switch ($handlerConfig['type'] ?? '') {
+            $type = $handlerConfig['type'] ?? '';
+            switch ($type) {
                 case 'stream':
                     $handler = new StreamHandler(
-                        $handlerConfig['path'],
+                        $handlerConfig['path'] ?? 'php://stdout',
                         Logger::toMonologLevel($handlerConfig['level'] ?? 'DEBUG')
                     );
                     $formatter = new LineFormatter(
@@ -56,7 +56,6 @@ class Factory
                     break;
 
                 case 'worm':
-                    // Immutable, write-once log storage handler
                     $handler = new WormHandler(
                         $config['worm']['storage_path']   ?? '',
                         $config['worm']['checksum_table'] ?? '',
@@ -65,38 +64,88 @@ class Factory
                     break;
 
                 case 'webhook':
-                    // Generic HTTP-notify handler
-                    $routeKey = $handlerConfig['route'] ?? null;
+                    $routeKey = $handlerConfig['route'] ?? '';
                     $webhook  = $config['webhooks'][$routeKey] ?? [];
                     $handler  = new WebhookHandler(
-                        $webhook['url']     ?? '',
+                        $webhook['url']    ?? '',
                         $handlerConfig['method'] ?? 'POST'
                     );
                     break;
 
-                // TODO: add cases for 'email', 'syslog', 'mongodb', etc.
-
                 default:
-                    // Unknown handler type; skip
+                    // unrecognized handler type
                     continue 2;
             }
 
             $logger->pushHandler($handler);
         }
 
-        //
-        // 2) Attach processors
-        //
+        // 4) Attach each processor
         foreach ($channelConfig['processors'] ?? [] as $procConfig) {
-            $class = $procConfig['class'] ?? null;
-            if (! $class || ! class_exists($class)) {
+            $className = $procConfig['class'] ?? '';
+            if (! $className || ! class_exists($className)) {
                 continue;
             }
-            // Pass the full config so processors can pick their own settings
-            $processor = new $class($config);
+            $processor = new $className($config);
             $logger->pushProcessor($processor);
         }
 
         return $logger;
+    }
+
+    /**
+     * PHP error handler callback.
+     * Normalizes PHP errors into a log record.
+     *
+     * @return bool  true = bypass PHP internal handler; false = continue
+     */
+    public static function handlePhpError(int $errno, string $errstr, string $errfile, int $errline): bool
+    {
+        $message = sprintf('PHP Error [%d]: %s', $errno, $errstr);
+        // log at ERROR level
+        Facade::error($message, [
+            'file'  => $errfile,
+            'line'  => $errline,
+            'errno' => $errno,
+        ]);
+        // return true to prevent PHP internal handler from running
+        return true;
+    }
+
+    /**
+     * Exception handler callback.
+     * Logs uncaught exceptions.
+     */
+    public static function handleException(Throwable $e): void
+    {
+        $message = $e->getMessage();
+        Facade::error($message, [
+            'exception' => get_class($e),
+            'file'      => $e->getFile(),
+            'line'      => $e->getLine(),
+            'trace'     => $e->getTraceAsString(),
+        ]);
+    }
+
+    /**
+     * Shutdown handler to catch fatal errors.
+     */
+    public static function handleShutdown(): void
+    {
+        $err = error_get_last();
+        if (! $err) {
+            return;
+        }
+
+        // Only handle fatal-level errors
+        $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR];
+        if (in_array($err['type'], $fatalTypes, true)) {
+            self::handlePhpError(
+                $err['type'],
+                $err['message'],
+                $err['file']  ?? 'n/a',
+                $err['line']  ?? 0
+            );
+        }
     }
 }
